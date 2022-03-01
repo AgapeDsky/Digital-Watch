@@ -64,7 +64,6 @@ int buttonMode = 2; // EXTI/Input 2
 int CLKPin = 5;
 int DIOPin = 6;
 TM1637 interface(CLKPin,DIOPin);
-int alarm = 9;
 int stopWatchFinish = A5;
 
 /* Display Mode */
@@ -73,6 +72,43 @@ bool setupMode = 0;
 int setTimeMode = 10;
 int setAlarmMode = 11;
 int stopWatchMode = 12;
+
+/* Alarm */
+/*define note*/
+#define timeNote 1.5
+#define C4 262
+#define D4 294
+#define E4 330
+#define F4 349
+#define G4 392
+#define A4 440
+#define B4 494
+#define C5 523
+#define D5 587
+#define E5 659
+#define F5 698
+#define G5 784
+#define A5 880
+#define B5 988
+#define C6 1047
+#define D6 1175
+#define E6 1319
+#define F6 1397
+#define G6 1568
+#define A6 1760
+#define B6 1976
+
+/*notes in the melody: */
+int melody[] = {
+  G5,E5,C5,A5,G5,0 ,E5,G5,F5,G5,F5,D5,E5,0, E6,C6,G5,C6,G5,E5,G5,0,A5,G5,E5,C6,G5,A5,G5,B5,A5,F5,D5,C5,0 ,C6
+};
+int noteDurations[] {
+  4,8,4,4,2,8 ,6,6,4,8,4,4,8,8 ,8,8,8,6,8,8,8,8 ,4,8,4,4,2, 4,8,4,8,4,4,4,2,4
+};
+
+int base=9; //pin base
+int alarm=8;
+bool alarmOn = 0;
 
 void setup() {
   Serial.begin(9600);
@@ -101,6 +137,8 @@ void setup() {
   pinMode(setTimeMode, OUTPUT);
   pinMode(setAlarmMode, OUTPUT);
   pinMode(stopWatchMode, OUTPUT);
+  pinMode(alarm, OUTPUT);
+  pinMode(base,OUTPUT);
   attachInterrupt(digitalPinToInterrupt(buttonMode), changeMode, RISING);
 
   /*Initialize Display*/
@@ -111,6 +149,7 @@ void setup() {
   xTaskCreate(displayCallback, "Task A", 128, NULL, tskIDLE_PRIORITY + 3, NULL);
   xTaskCreate(mainProcessCallback, "Task B", 128, NULL, tskIDLE_PRIORITY + 2, NULL);
   xTaskCreate(stopWatchCallback, "Task C", 128, NULL, tskIDLE_PRIORITY + 2, NULL);
+  xTaskCreate(alarmCallback, "Task D", 128, NULL, tskIDLE_PRIORITY + 1, NULL);
 }
 
 void loop() {
@@ -261,6 +300,18 @@ void stopWatchCallback(void* pvParameters) {
   }
 }
 
+void alarmCallback(void* pvParameters) {
+  (void) pvParameters;
+  while(1) {
+    if(alarmOn) {
+      digitalWrite(base, 1);
+      melody_alarm();
+      digitalWrite(base, 0);
+    }
+    vTaskDelay(20/portTICK_PERIOD_MS);
+  }
+}
+
 ISR(TIMER1_COMPA_vect){
   /**
    * @brief ISR for timer interrupt
@@ -274,9 +325,11 @@ ISR(TIMER1_COMPA_vect){
   //Alarm handler
   if((mins == alarmMins) && (hours == alarmHours)) {
     digitalWrite(alarm, HIGH);
+    alarmOn = true;
   }
   else if ((mins == alarmStopMins) && (hours == alarmStopHours)) {
     digitalWrite(alarm, LOW);
+    alarmOn = false;
   }
 }
 
@@ -414,4 +467,13 @@ void addHours()
   else if (hours == 23) {
     hours = 0;
   }
+}
+
+void melody_alarm(){
+  // iterate over the notes of the melody:
+  for (int thisNote = 0; thisNote < sizeof(melody)/2; thisNote++) {
+    tone(alarm, melody[thisNote], 1000/noteDurations[thisNote]);
+    vTaskDelay(((1000/portTICK_PERIOD_MS)/noteDurations[thisNote])*timeNote);
+  }
+  noTone(alarm);
 }
