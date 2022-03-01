@@ -141,6 +141,7 @@ void mainProcessCallback(void* pvParameters) {
       tempMainProcessMins1 = mins;
       tempMainProcessHours1 = hours;
       if (digitalRead(buttonNext) && setupMode == false) {
+        digitalWrite(setTimeMode, HIGH);
         setupMode = true;
         timeMillis = millis();
         while((millis()-timeMillis)<500){};
@@ -160,6 +161,7 @@ void mainProcessCallback(void* pvParameters) {
         hours = tempMainProcessHours1;
         mins = tempMainProcessMins1;
         setupMode = false;
+        digitalWrite(setTimeMode, LOW);
       }
     }
 
@@ -167,6 +169,7 @@ void mainProcessCallback(void* pvParameters) {
       tempMainProcessMins2 = alarmMins;
       tempMainProcessHours2 = alarmHours;
       if (digitalRead(buttonNext) && setupMode == false) {
+        digitalWrite(setAlarmMode, HIGH);
         setupMode = true;
         timeMillis = millis();
         while((millis()-timeMillis)<500){};
@@ -208,6 +211,7 @@ void mainProcessCallback(void* pvParameters) {
           }
         }
         setupMode = false;
+        digitalWrite(setAlarmMode, LOW);
       }
     }
 
@@ -219,6 +223,7 @@ void stopWatchCallback(void* pvParameters) {
   (void) pvParameters;
   while(1) {
     if (digitalRead(buttonNext) && displayMode == 3 && setupMode == false) {
+      digitalWrite(stopWatchMode, HIGH);
       setupMode = true;
       timeMillis = millis();
       while((millis()-timeMillis)<500){};
@@ -236,7 +241,8 @@ void stopWatchCallback(void* pvParameters) {
   
       timeMillis = millis();
       while((millis()-timeMillis)<500){};
-  
+
+      digitalWrite(stopWatchMode, LOW);
       setupMode = false;
 
       while(stopWatchMins > 0 || stopWatchSecs > 0) {
