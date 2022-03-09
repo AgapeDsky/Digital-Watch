@@ -2,7 +2,7 @@
  * Digital Clock Program
  * by Agape D'sky (13219010), I Gusti Lanang Ari Tri S (13219046)
  * 
- * @brief Digital Clock with set time, stopwatch, and alarm feature
+ * @brief Digital Clock with set time, timer, and alarm feature
  * @brief Schematic is included in the repository
  * 
  * This program uses Arduino Nano (ATmega328p)
@@ -21,8 +21,9 @@ uint32_t hours = 0;
 unsigned long timeMillis = 0;
 uint32_t alarmHours = 0;
 uint32_t alarmMins = 0;
+uint32_t alarmSecs = 0;
 uint32_t alarmStopHours = 0;
-uint32_t alarmStopMins = 1;
+uint32_t alarmStopMins = 0;
 
 /*Temporary time params*/
 uint32_t tempMainProcessHours1 = 0;
@@ -33,27 +34,38 @@ uint32_t tempMainProcessHours2 = 0;
 uint32_t tempMainProcessMins2 = 0;
 uint32_t tempMainProcessSecs2 = 0;
 
-uint32_t stopWatchSecs = 0;
-uint32_t stopWatchMins = 0;
+/* Timer time params */
+uint32_t timerSecs = 0;
+uint32_t timerMins = 0;
 
 /*Time adding function*/
 void addSecs();
 void addMins();
 void addHours();
-void addTempSecs();
+
+/*Temporary Time Params Adding Functions */
+/**
+ * @brief templates for temporary time params
+ */
+void addTempSecs(); // can be written addTempSecs1 for temp var 1, etc
 void addTempMins();
 void addTempHours();
+
+/* RTOS Thread */
 void mainProcessCallback(void* pvParameters);
 void displayCallback(void* pvParameters);
-void stopWatchCallback(void* pvParameters);
-
-/*Validations*/
-bool timeValidation();
+void timerCallback(void* pvParameters);
 
 /*Display function*/
 void displayTime(int hours, int minutes);
 void displayHours(int hours);
 void displayMins(int minutes);
+
+/* Misc. functions */
+void changeMode();      // display mode change interrupt
+void decrementTimer();  // timer sec decrement function
+void shutAlarm();       // shut alarm forcefully using interrupt routine
+void shutTimer();       // shut timer forcefully using interrupt routine
 
 /* Input Pin Planning */
 int buttonInc = 3; // EXTI/Input 1
@@ -64,16 +76,25 @@ int buttonMode = 2; // EXTI/Input 2
 int CLKPin = 5;
 int DIOPin = 6;
 TM1637 interface(CLKPin,DIOPin);
-int stopWatchFinish = A5;
+int timerFinish = A5;
 
-/* Display Mode */
-uint8_t displayMode = 0;
-bool setupMode = 0;
+/* Setup Mode LEDs */
 int setTimeMode = 10;
 int setAlarmMode = 11;
-int stopWatchMode = 12;
+int timerMode = 12;
+
+/* State variables */
+bool forceShutTimer = 0;
+uint8_t displayMode = 0;
+bool setupMode = 0;
+bool alarmOn = 0;
 
 /* Alarm */
+/* Alarm pin Mapping */
+int base = 9; //transistor base control
+int alarm = 8;
+
+/*notes in the melody: */
 /*define note*/
 #define timeNote 1.5
 #define C4 262
@@ -98,7 +119,6 @@ int stopWatchMode = 12;
 #define A6 1760
 #define B6 1976
 
-/*notes in the melody: */
 int melody[] = {
   G5,E5,C5,A5,G5,0 ,E5,G5,F5,G5,F5,D5,E5,0, E6,C6,G5,C6,G5,E5,G5,0,A5,G5,E5,C6,G5,A5,G5,B5,A5,F5,D5,C5,0 ,C6
 };
@@ -106,17 +126,20 @@ int noteDurations[] {
   4,8,4,4,2,8 ,6,6,4,8,4,4,8,8 ,8,8,8,6,8,8,8,8 ,4,8,4,4,2, 4,8,4,8,4,4,4,2,4
 };
 
-int base=9; //pin base
-int alarm=8;
-bool alarmOn = 0;
 
 void setup() {
   Serial.begin(9600);
 
   // Initialize time
-  secs = 0;
+  secs = 50;
   mins = 10;
   hours = 10;
+  // Initialize alarm time params
+  alarmHours = 0;
+  alarmMins = 0;
+  alarmSecs = 0;
+  alarmStopHours = 0;
+  alarmStopMins = 1;
   
   cli();                      // Disable Interrupt
   
@@ -133,10 +156,10 @@ void setup() {
   pinMode(buttonNext, INPUT);
   pinMode(buttonMode, INPUT);
   pinMode(alarm, OUTPUT);
-  pinMode(stopWatchFinish, OUTPUT);
+  pinMode(timerFinish, OUTPUT);
   pinMode(setTimeMode, OUTPUT);
   pinMode(setAlarmMode, OUTPUT);
-  pinMode(stopWatchMode, OUTPUT);
+  pinMode(timerMode, OUTPUT);
   pinMode(alarm, OUTPUT);
   pinMode(base,OUTPUT);
   attachInterrupt(digitalPinToInterrupt(buttonMode), changeMode, RISING);
@@ -146,9 +169,9 @@ void setup() {
   interface.set(7);
 
   /*Initialize thread*/
-  xTaskCreate(displayCallback, "Task A", 128, NULL, tskIDLE_PRIORITY + 3, NULL);
+  xTaskCreate(displayCallback, "Task A", 128, NULL, tskIDLE_PRIORITY + 4, NULL);
+  xTaskCreate(timerCallback, "Task C", 128, NULL, tskIDLE_PRIORITY + 2, NULL);
   xTaskCreate(mainProcessCallback, "Task B", 128, NULL, tskIDLE_PRIORITY + 2, NULL);
-  xTaskCreate(stopWatchCallback, "Task C", 128, NULL, tskIDLE_PRIORITY + 2, NULL);
   xTaskCreate(alarmCallback, "Task D", 128, NULL, tskIDLE_PRIORITY + 1, NULL);
 }
 
@@ -160,15 +183,22 @@ void displayCallback(void* pvParameters) {
   (void) pvParameters;
   while(1) {
     switch (displayMode) {
+      /**
+       * @brief switch display based on displayMode (attached to EXTI buttonMode)
+       */
       case 0 : displayTime(hours, mins); break;
       case 1 : displayTime(tempMainProcessHours1, tempMainProcessMins1); break;
       case 2 : displayTime(tempMainProcessHours2, tempMainProcessMins2); break;
-      case 3 : displayTime(stopWatchMins, stopWatchSecs); break;
+      case 3 : displayTime(timerMins, timerSecs); break;
     }
     switch (setupMode) {
+      /**
+       * @brief switch display dim based on setupMode (activated everytime setup mode occurs)
+       */
       case false : interface.set(7); break;
       case true : interface.set(1); break;
     }
+    // RTOS-safe delay
     vTaskDelay(20/portTICK_PERIOD_MS);
   }
 }
@@ -176,59 +206,89 @@ void displayCallback(void* pvParameters) {
 void mainProcessCallback(void* pvParameters) {
   (void) pvParameters;
   while(1) {
-    if (displayMode == 1) {           // Set time
+    /**
+     * @brief entering displayMode 1 (set time)
+     * @brief setupMode will be invoked when buttonNext is pressed in this current mode
+     */
+    if (displayMode == 1) {
       tempMainProcessMins1 = mins;
       tempMainProcessHours1 = hours;
       if (digitalRead(buttonNext) && setupMode == false) {
+        // Set setup LED to HIGH
         digitalWrite(setTimeMode, HIGH);
+        // Set setupMode to TRUE
         setupMode = true;
+
+        // Thread safe delay, for UX purposes
         timeMillis = millis();
         while((millis()-timeMillis)<500){};
-        
+
+        // Increment minutes value
         attachInterrupt(digitalPinToInterrupt(buttonInc), addTempMins1, RISING);
         while(!digitalRead(buttonNext)) {}
         detachInterrupt(digitalPinToInterrupt(buttonInc));
 
+        // Thread safe delay, for UX purposes
         timeMillis = millis();
         while((millis()-timeMillis)<500){}
 
+        // Increment hours value
         attachInterrupt(digitalPinToInterrupt(buttonInc), addTempHours1, RISING);
         while(!digitalRead(buttonNext)) {}
         detachInterrupt(digitalPinToInterrupt(buttonInc));
 
+        // Thread safe delay, for UX purposes
         vTaskDelay(500/portTICK_PERIOD_MS);
+
+        // Assign changes to current time
         hours = tempMainProcessHours1;
         mins = tempMainProcessMins1;
+
+        // Set setupMode to FALSE
         setupMode = false;
         digitalWrite(setTimeMode, LOW);
       }
     }
 
     else if (displayMode == 2) {
+      /**
+       * @brief entering displayMode 2 (set alarm)
+       * @brief setupMode will be invoked when buttonNext is pressed in this current mode
+       */
       tempMainProcessMins2 = alarmMins;
       tempMainProcessHours2 = alarmHours;
       if (digitalRead(buttonNext) && setupMode == false) {
+        // Set Setup LED to HIGH
         digitalWrite(setAlarmMode, HIGH);
+        // Set setupMode to TRUE
         setupMode = true;
+
+        // Thread safe delay, for UX purposes
         timeMillis = millis();
         while((millis()-timeMillis)<500){};
-        
+
+        // Increment alarm minutes
         attachInterrupt(digitalPinToInterrupt(buttonInc), addTempMins2, RISING);
         while(!digitalRead(buttonNext)) {}
         detachInterrupt(digitalPinToInterrupt(buttonInc));
 
+        // Thread safe delay, for UX purposes
         timeMillis = millis();
         while((millis()-timeMillis)<500){};
 
+        // Increment alarm hours
         attachInterrupt(digitalPinToInterrupt(buttonInc), addTempHours2, RISING);
         while(!digitalRead(buttonNext)) {}
         detachInterrupt(digitalPinToInterrupt(buttonInc));
 
+        // Thread safe delay, for UX purposes
         vTaskDelay(500/portTICK_PERIOD_MS);
-        
+
+        // Assign changes to current alarm
         alarmHours = tempMainProcessHours2;
         alarmMins = tempMainProcessMins2;
 
+        // Set alarm stop time (1 minute after alarm on event)
         if(alarmHours == 23) {
           if(alarmMins == 59) {
             alarmStopMins = 0;
@@ -249,64 +309,119 @@ void mainProcessCallback(void* pvParameters) {
             alarmStopHours = alarmHours + 1;
           }
         }
+
+        // Set setupMode to FALSE
         setupMode = false;
+        // Set setup LED to LOW
         digitalWrite(setAlarmMode, LOW);
       }
     }
-
+    // RTOS-safe delay
     vTaskDelay(20/portTICK_PERIOD_MS);
   }
 }
 
-void stopWatchCallback(void* pvParameters) {
+void timerCallback(void* pvParameters) {
   (void) pvParameters;
   while(1) {
-    if (digitalRead(buttonNext) && displayMode == 3 && setupMode == false) {
-      digitalWrite(stopWatchMode, HIGH);
-      setupMode = true;
-      timeMillis = millis();
-      while((millis()-timeMillis)<500){};
-      
-      attachInterrupt(digitalPinToInterrupt(buttonInc), addStopWatchSecs, RISING);
-      while(!digitalRead(buttonNext)) {}
-      detachInterrupt(digitalPinToInterrupt(buttonInc));
-  
-      timeMillis = millis();
-      while((millis()-timeMillis)<500){};
-  
-      attachInterrupt(digitalPinToInterrupt(buttonInc), addStopWatchMins, RISING);
-      while(!digitalRead(buttonNext)) {}
-      detachInterrupt(digitalPinToInterrupt(buttonInc));
-  
-      timeMillis = millis();
-      while((millis()-timeMillis)<500){};
+    if(displayMode == 3) {
+      /**
+       * @brief entering displayMode 3 (set timer)
+       * @brief setupMode will be invoked when buttonNext is pressed in this current mode
+       */
+      if (digitalRead(buttonNext) && setupMode == false) {
+        // Set setupMode to TRUE
+        setupMode = true;              
+        // set setup LED to HIGH
+        digitalWrite(timerMode, HIGH);                                                                                                                                                                                               printf("%d", setupMode);
 
-      digitalWrite(stopWatchMode, LOW);
-      setupMode = false;
-
-      while(stopWatchMins > 0 || stopWatchSecs > 0) {
+        // Thread safe delay, for UX purposes
         timeMillis = millis();
-        while(millis()-timeMillis<1000) {}
-        decrementStopWatch();
+        while((millis()-timeMillis)<500){};
+
+        // Increment timer seconds
+        attachInterrupt(digitalPinToInterrupt(buttonInc), addTimerSecs, RISING);
+        while(!digitalRead(buttonNext)) {}
+        detachInterrupt(digitalPinToInterrupt(buttonInc));
+
+        // Thread safe delay, for UX purposes
+        timeMillis = millis();
+        while((millis()-timeMillis)<500){};
+
+        // Increment timer minutes (up to 99 mins)
+        attachInterrupt(digitalPinToInterrupt(buttonInc), addTimerMins, RISING);
+        while(!digitalRead(buttonNext)) {}
+        detachInterrupt(digitalPinToInterrupt(buttonInc));
+
+        // Thread safe delay, for UX purposes
+        timeMillis = millis();
+        while((millis()-timeMillis)<500){};
+
+        // set setup LED to LOW
+        digitalWrite(timerMode, LOW);
+        // set setupMode to FALSE
+        setupMode = false;
+
+        // State variable for interrupt attachments, so that timer killing interrupt will only be attached when the display shows timer mode
+        bool attachedOnce = 0;
+
+        // Start timer count
+        while(timerMins > 0 || timerSecs > 0) {
+          decrementTimer();
+          if (displayMode == 3) {
+            if (attachedOnce == 0) {
+              attachInterrupt(digitalPinToInterrupt(buttonInc), shutTimer, RISING);
+              attachedOnce = 1;
+            }
+            else {
+              // do nothing
+            }
+          }
+          else {
+            if (attachedOnce == 1) {
+              detachInterrupt(digitalPinToInterrupt(buttonInc));
+            }
+            else {
+              // do nothing
+            }
+          }
+          timeMillis = millis();
+          while(millis()-timeMillis<1000) {}
+        }
+        detachInterrupt(digitalPinToInterrupt(buttonInc));
+
+        // Evaluating timer shut (normally or forced)
+        if (forceShutTimer == 0) {
+          // Timer shutted normally
+          digitalWrite(timerFinish, 1);
+          digitalWrite(base, 1);
+          digitalWrite(alarm, 1);
+          timeMillis = millis();
+          while(millis()-timeMillis<1000) {}
+          digitalWrite(timerFinish, 0);
+          digitalWrite(base, 0);
+          digitalWrite(alarm, 0);
+        }
+        else {
+          // Timer shutted forcefully, do nothing
+        }
+        forceShutTimer = 0;
       }
-
-      digitalWrite(stopWatchFinish, 1);
-      timeMillis = millis();
-      while(millis()-timeMillis<1000) {}
-      digitalWrite(stopWatchFinish, 0);
     }
-
+    // RTOS-safe delay
     vTaskDelay(20/portTICK_PERIOD_MS);
   }
 }
 
 void alarmCallback(void* pvParameters) {
+  /**
+   * @brief alarm callback, additional thread for sounding the alarm
+   * @brief this is needed since the program uses PWM
+   */
   (void) pvParameters;
   while(1) {
     if(alarmOn) {
-      digitalWrite(base, 1);
       melody_alarm();
-      digitalWrite(base, 0);
     }
     vTaskDelay(20/portTICK_PERIOD_MS);
   }
@@ -323,9 +438,11 @@ ISR(TIMER1_COMPA_vect){
   addSecs();
 
   //Alarm handler
-  if((mins == alarmMins) && (hours == alarmHours)) {
+  if((mins == alarmMins) && (hours == alarmHours) && (secs == alarmSecs)) {
     digitalWrite(alarm, HIGH);
     alarmOn = true;
+    // Attach shutAlarm to buttonInc interrupt pin, for manually shutting the alarm
+    attachInterrupt(digitalPinToInterrupt(buttonInc), shutAlarm, RISING);
   }
   else if ((mins == alarmStopMins) && (hours == alarmStopHours)) {
     digitalWrite(alarm, LOW);
@@ -348,72 +465,84 @@ void changeMode() {
   }
 }
 
-void addStopWatchSecs() {
-  if (stopWatchSecs == 59) {
-    stopWatchSecs = 0;
-  }
-  else {
-    stopWatchSecs++;
+void addTimerSecs() {
+  if (displayMode == 3){
+    if (timerSecs == 59) {
+      timerSecs = 0;
+    }
+    else {
+      timerSecs++;
+    }
   }
 }
 
 void addTempMins1() {
-  if (tempMainProcessMins1 == 59) {
-    tempMainProcessMins1 = 0;
-  }
-  else {
-    tempMainProcessMins1++;
+  if (displayMode == 1) {
+    if (tempMainProcessMins1 == 59) {
+      tempMainProcessMins1 = 0;
+    }
+    else {
+      tempMainProcessMins1++;
+    }
   }
 }
 
 void addTempMins2() {
-  if (tempMainProcessMins2 == 59) {
-    tempMainProcessMins2 = 0;
-  }
-  else {
-    tempMainProcessMins2++;
+  if (displayMode == 2) {
+    if (tempMainProcessMins2 == 59) {
+      tempMainProcessMins2 = 0;
+    }
+    else {
+      tempMainProcessMins2++;
+    }
   }
 }
 
-void addStopWatchMins() {
-  if (stopWatchMins == 99) {
-    stopWatchMins = 0;
-  }
-  else {
-    stopWatchMins++;
+void addTimerMins() {
+  if (displayMode == 3) {
+    if (timerMins == 99) {
+      timerMins = 0;
+    }
+    else {
+      timerMins++;
+    }
   }
 }
 
 void addTempHours1() {
-  if (tempMainProcessHours1 == 23) {
-    tempMainProcessHours1 = 0;
-  }
-  else {
-    tempMainProcessHours1++;
+  if (displayMode == 1) {
+    if (tempMainProcessHours1 == 23) {
+      tempMainProcessHours1 = 0;
+    }
+    else {
+      tempMainProcessHours1++;
+    }
   }
 }
 
 void addTempHours2() {
-  if (tempMainProcessHours2 == 23) {
-    tempMainProcessHours2 = 0;
-  }
-  else {
-    tempMainProcessHours2++;
+  if (displayMode == 2) {
+    if (tempMainProcessHours2 == 23) {
+      tempMainProcessHours2 = 0;
+    }
+    else {
+      tempMainProcessHours2++;
+    }
   }
 }
 
-void decrementStopWatch() {
-  if (stopWatchSecs == 0) {
-    if (stopWatchMins > 0) {
-      stopWatchMins--;
-      stopWatchSecs = 59;
+void decrementTimer() {
+  if (timerSecs == 0) {
+    if (timerMins > 0) {
+      timerMins--;
+      timerSecs = 59;
     }
     else {
       return;
     }
   }
   else {
-    stopWatchSecs--;
+    timerSecs--;
   }
 }
 
@@ -469,11 +598,34 @@ void addHours()
   }
 }
 
+void shutAlarm() {
+  alarmOn = 0;
+  detachInterrupt(buttonInc);
+}
+
+void shutTimer() {
+  timerMins = 0;
+  timerSecs = 0;
+  forceShutTimer = 1;
+}
+
 void melody_alarm(){
   // iterate over the notes of the melody:
   for (int thisNote = 0; thisNote < sizeof(melody)/2; thisNote++) {
-    tone(alarm, melody[thisNote], 1000/noteDurations[thisNote]);
-    vTaskDelay(((1000/portTICK_PERIOD_MS)/noteDurations[thisNote])*timeNote);
+    if (melody[thisNote] == 0) {
+      digitalWrite(base, 0);
+      vTaskDelay(((1000/portTICK_PERIOD_MS)/noteDurations[thisNote])*timeNote);
+    }
+    else {
+      if (alarmOn) {
+        digitalWrite(base, 1);
+        tone(alarm, melody[thisNote], 1000/noteDurations[thisNote]);
+        vTaskDelay(((1000/portTICK_PERIOD_MS)/noteDurations[thisNote])*timeNote);
+      }
+    }
+    digitalWrite(base, 0);
+    
+//    delay(((1000)/noteDurations[thisNote])*timeNote);
   }
   noTone(alarm);
 }
